@@ -24,7 +24,13 @@ app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 31536000  # 1 year cache for static fi
 app.config['JSONIFY_PRETTYPRINT_REGULAR'] = False  # Faster JSON responses
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.5",
+    "Accept-Encoding": "gzip, deflate",
+    "DNT": "1",
+    "Connection": "keep-alive",
+    "Upgrade-Insecure-Requests": "1"
 }
 
 # Connection pooling for better performance
@@ -177,35 +183,74 @@ def fetch_single_url(url):
     if cached_data:
         return jsonify({"ok": True, "data": cached_data, "cached": True})
     
-    try:
-        response = SESSION.get(url, timeout=10)
-        response.raise_for_status()
-        data = response.json()
-        
-        # Cache the result
-        set_cache(cache_key, data)
-        
-        return jsonify({"ok": True, "data": data, "cached": False})
-        
-    except requests.exceptions.HTTPError as e:
-        if e.response.status_code == 404:
-            return jsonify({"error": "Subreddit or user not found. Check the spelling and try again."}), 404
-        elif e.response.status_code == 403:
-            return jsonify({"error": "Access denied. This subreddit may be private or requires authentication."}), 403
-        elif e.response.status_code == 429:
-            return jsonify({"error": "Too many requests. Please wait a moment and try again."}), 429
-        elif e.response.status_code == 500:
-            return jsonify({"error": "Reddit server error. Please try again later."}), 500
-        else:
-            return jsonify({"error": f"Reddit returned HTTP {e.response.status_code}. Please try again."}), 400
-    except requests.exceptions.Timeout:
-        return jsonify({"error": "Request timed out. Reddit may be slow. Please try again."}), 408
-    except requests.exceptions.ConnectionError:
-        return jsonify({"error": "Network error. Please check your internet connection."}), 500
-    except json.JSONDecodeError:
-        return jsonify({"error": "Invalid response from Reddit. Please try again."}), 500
-    except Exception as e:
-        return jsonify({"error": f"Unexpected error: {str(e)}"}), 500
+    # Try multiple approaches to avoid blocking
+    approaches = [
+        # Approach 1: Direct with full headers
+        {
+            "headers": HEADERS,
+            "timeout": 10
+        },
+        # Approach 2: Minimal headers (fallback)
+        {
+            "headers": {
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+            },
+            "timeout": 15
+        },
+        # Approach 3: Reddit app user agent
+        {
+            "headers": {
+                "User-Agent": "Reddit:RedditMediaDownloader:v1.0.0 (by /u/RedditDownloader)"
+            },
+            "timeout": 20
+        }
+    ]
+    
+    for i, approach in enumerate(approaches):
+        try:
+            response = SESSION.get(url, headers=approach["headers"], timeout=approach["timeout"])
+            response.raise_for_status()
+            data = response.json()
+            
+            # Cache the result
+            set_cache(cache_key, data)
+            
+            return jsonify({"ok": True, "data": data, "cached": False})
+            
+        except requests.exceptions.HTTPError as e:
+            if e.response.status_code == 404:
+                return jsonify({"error": "Subreddit or user not found. Check the spelling and try again."}), 404
+            elif e.response.status_code == 403:
+                # Try next approach for 403 errors
+                if i < len(approaches) - 1:
+                    time.sleep(1)  # Brief delay before retry
+                    continue
+                return jsonify({"error": "Access denied. This subreddit may be private or requires authentication."}), 403
+            elif e.response.status_code == 429:
+                return jsonify({"error": "Too many requests. Please wait a moment and try again."}), 429
+            elif e.response.status_code == 500:
+                return jsonify({"error": "Reddit server error. Please try again later."}), 500
+            else:
+                return jsonify({"error": f"Reddit returned HTTP {e.response.status_code}. Please try again."}), 400
+                
+        except requests.exceptions.Timeout:
+            if i < len(approaches) - 1:
+                continue
+            return jsonify({"error": "Request timed out. Reddit may be slow. Please try again."}), 408
+        except requests.exceptions.ConnectionError:
+            if i < len(approaches) - 1:
+                continue
+            return jsonify({"error": "Network error. Please check your internet connection."}), 500
+        except json.JSONDecodeError:
+            if i < len(approaches) - 1:
+                continue
+            return jsonify({"error": "Invalid response from Reddit. Please try again."}), 500
+        except Exception as e:
+            if i < len(approaches) - 1:
+                continue
+            return jsonify({"error": f"Unexpected error: {str(e)}"}), 500
+    
+    return jsonify({"error": "All connection attempts failed. Please try again later."}), 500
 
 def fetch_paginated_posts(path, limit):
     """Fetch posts using optimized pagination with concurrent requests"""
