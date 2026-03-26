@@ -1,0 +1,619 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Reddit Media Downloader</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg: #f7f6f3;
+    --surface: #ffffff;
+    --border: #e2e0da;
+    --text: #1a1917;
+    --muted: #7a7870;
+    --accent: #e85d2f;
+    --accent-light: #fdf0eb;
+    --radius: 8px;
+    --font: 'DM Sans', sans-serif;
+    --mono: 'DM Mono', monospace;
+  }
+
+  body {
+    font-family: var(--font);
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+  }
+
+  header {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 14px 24px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .logo {
+    width: 28px; height: 28px;
+    background: var(--accent);
+    border-radius: 6px;
+    display: flex; align-items: center; justify-content: center;
+    color: #fff;
+    font-size: 14px;
+    flex-shrink: 0;
+  }
+
+  header h1 { font-size: 15px; font-weight: 500; letter-spacing: -0.01em; }
+  header span { font-size: 13px; color: var(--muted); margin-left: auto; }
+
+  main { max-width: 960px; margin: 0 auto; padding: 28px 20px; }
+
+  .search-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px;
+    margin-bottom: 20px;
+  }
+
+  .search-row {
+    display: flex; gap: 8px; flex-wrap: wrap;
+  }
+
+  input[type="text"] {
+    flex: 1; min-width: 200px;
+    height: 38px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 0 12px;
+    font-family: var(--font);
+    font-size: 14px;
+    background: var(--bg);
+    color: var(--text);
+    outline: none;
+    transition: border-color 0.15s;
+  }
+  input[type="text"]:focus { border-color: var(--accent); }
+
+  select {
+    height: 38px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 0 10px;
+    font-family: var(--font);
+    font-size: 13px;
+    background: var(--bg);
+    color: var(--text);
+    cursor: pointer;
+    outline: none;
+  }
+
+  .btn {
+    height: 38px;
+    padding: 0 18px;
+    border-radius: var(--radius);
+    border: 1px solid var(--border);
+    font-family: var(--font);
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    background: var(--surface);
+    color: var(--text);
+    transition: all 0.12s;
+    white-space: nowrap;
+  }
+  .btn:hover { background: var(--bg); }
+  .btn:active { transform: scale(0.98); }
+  .btn.accent { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .btn.accent:hover { opacity: 0.9; }
+
+  .error {
+    margin-top: 12px;
+    padding: 10px 14px;
+    background: #fef2f2;
+    border: 1px solid #fecaca;
+    border-radius: var(--radius);
+    font-size: 13px;
+    color: #dc2626;
+    display: none;
+  }
+
+  .progress-wrap { margin-top: 12px; display: none; }
+  .progress-label { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+  .progress-track { height: 3px; background: var(--border); border-radius: 2px; overflow: hidden; }
+  .progress-fill { height: 100%; background: var(--accent); border-radius: 2px; transition: width 0.3s; width: 0%; }
+
+  .toolbar {
+    display: none;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 16px;
+    flex-wrap: wrap;
+  }
+
+  .pill {
+    height: 30px;
+    padding: 0 14px;
+    border-radius: 99px;
+    border: 1px solid var(--border);
+    font-family: var(--font);
+    font-size: 12px;
+    cursor: pointer;
+    background: var(--surface);
+    color: var(--muted);
+    transition: all 0.12s;
+  }
+  .pill.active { background: var(--text); color: var(--surface); border-color: var(--text); }
+  .pill:hover:not(.active) { border-color: var(--text); color: var(--text); }
+
+  .toolbar-right { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+  .count-label { font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(168px, 1fr));
+    gap: 12px;
+  }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+    cursor: pointer;
+    transition: border-color 0.12s, box-shadow 0.12s;
+    position: relative;
+  }
+  .card:hover { border-color: #bbb; }
+  .card.selected { border-color: var(--accent); border-width: 2px; }
+
+  .thumb-wrap { position: relative; aspect-ratio: 1; overflow: hidden; background: var(--bg); }
+  .thumb-wrap img {
+    width: 100%; height: 100%; object-fit: cover;
+    display: block;
+    transition: transform 0.2s;
+  }
+  .card:hover .thumb-wrap img { transform: scale(1.03); }
+  .thumb-ph {
+    width: 100%; height: 100%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 32px;
+  }
+
+  .card-check {
+    position: absolute; top: 7px; right: 7px;
+    width: 22px; height: 22px; border-radius: 50%;
+    border: 2px solid rgba(255,255,255,0.8);
+    background: rgba(0,0,0,0.25);
+    display: flex; align-items: center; justify-content: center;
+    opacity: 0;
+    transition: opacity 0.12s;
+  }
+  .card:hover .card-check, .card.selected .card-check { opacity: 1; }
+  .card.selected .card-check { background: var(--accent); border-color: var(--accent); }
+  .card-check svg { display: none; }
+  .card.selected .card-check svg { display: block; }
+
+  .card-footer {
+    padding: 7px 9px 8px;
+    border-top: 1px solid var(--border);
+  }
+  .card-type {
+    display: inline-block;
+    font-size: 10px; font-weight: 500; font-family: var(--mono);
+    padding: 2px 6px; border-radius: 4px;
+    margin-bottom: 3px;
+    text-transform: uppercase; letter-spacing: 0.04em;
+  }
+  .type-image  { background: #eff6ff; color: #1d4ed8; }
+  .type-gif    { background: #fffbeb; color: #b45309; }
+  .type-video  { background: #fef2f2; color: #b91c1c; }
+  .type-gallery{ background: #f0fdf4; color: #166534; }
+
+  .card-title {
+    font-size: 11px; color: var(--muted);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    line-height: 1.4;
+  }
+
+  .empty {
+    grid-column: 1 / -1;
+    padding: 48px;
+    text-align: center;
+    color: var(--muted);
+    font-size: 14px;
+  }
+
+  .bottom-bar {
+    display: none;
+    position: sticky;
+    bottom: 0;
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+    padding: 12px 20px;
+    margin: 20px -20px -28px;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+
+  .link-btn {
+    font-size: 13px; color: var(--muted);
+    background: none; border: none; cursor: pointer;
+    text-decoration: underline; text-underline-offset: 2px;
+    font-family: var(--font);
+    padding: 0;
+  }
+  .link-btn:hover { color: var(--text); }
+  .sel-info { font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">↓</div>
+  <h1>Reddit Media Downloader</h1>
+  <span>Images · GIFs · Videos · Galleries</span>
+</header>
+
+<main>
+  <div class="search-card">
+    <div class="search-row">
+      <input type="text" id="query" placeholder="r/earthporn  or  u/username" />
+      <select id="sort">
+        <option value="hot">Hot</option>
+        <option value="new">New</option>
+        <option value="top">Top (all time)</option>
+        <option value="rising">Rising</option>
+      </select>
+      <select id="limit">
+        <option value="25">25 posts</option>
+        <option value="50">50 posts</option>
+        <option value="100">100 posts</option>
+        <option value="250">250 posts</option>
+        <option value="500">500 posts</option>
+        <option value="lifetime">Lifetime (up to 2,500 posts)</option>
+      </select>
+      <button class="btn accent" onclick="fetchMedia()">Fetch media</button>
+    </div>
+    <div class="error" id="err-box"></div>
+    <div class="progress-wrap" id="prog-wrap">
+      <div class="progress-label" id="prog-label">Fetching…</div>
+      <div class="progress-track"><div class="progress-fill" id="prog-fill"></div></div>
+    </div>
+  </div>
+
+  <div class="toolbar" id="toolbar">
+    <button class="pill active" onclick="setFilter('all', this)">All</button>
+    <button class="pill" onclick="setFilter('image', this)">Images</button>
+    <button class="pill" onclick="setFilter('gif', this)">GIFs</button>
+    <button class="pill" onclick="setFilter('video', this)">Videos</button>
+    <button class="pill" onclick="setFilter('gallery', this)">Galleries</button>
+    <div class="toolbar-right">
+      <span class="count-label" id="count-label"></span>
+    </div>
+  </div>
+
+  <div class="grid" id="grid"></div>
+
+  <div class="bottom-bar" id="bottom-bar">
+    <button class="link-btn" onclick="selectAll()">Select all</button>
+    <button class="link-btn" onclick="deselectAll()">Deselect all</button>
+    <span class="sel-info" id="sel-info"></span>
+    <div style="flex:1"></div>
+    <button class="btn" onclick="downloadSelected()">Download selected</button>
+    <button class="btn accent" onclick="downloadAll()">Download all</button>
+  </div>
+</main>
+
+<script>
+let allItems = [], activeFilter = 'all', selected = new Set();
+
+function showErr(msg, type = 'error') {
+  const b = document.getElementById('err-box');
+  b.textContent = msg;
+  b.style.display = 'block';
+  
+  // Reset styles first
+  b.style.background = '';
+  b.style.borderColor = '';
+  b.style.color = '';
+  
+  if (type === 'success') {
+    b.style.background = '#f0fdf4';
+    b.style.borderColor = '#bbf7d0';
+    b.style.color = '#166534';
+  } else if (type === 'warning') {
+    b.style.background = '#fffbeb';
+    b.style.borderColor = '#fde68a';
+    b.style.color = '#b45309';
+  } else {
+    // Default error styling
+    b.style.background = '#fef2f2';
+    b.style.borderColor = '#fecaca';
+    b.style.color = '#dc2626';
+  }
+  
+  // Auto-hide after 10 seconds for errors, 5 seconds for others
+  const hideTime = type === 'error' ? 10000 : 5000;
+  setTimeout(() => {
+    b.style.display = 'none';
+  }, hideTime);
+}
+function setProgress(pct, label) {
+  const w = document.getElementById('prog-wrap');
+  if (pct === null) { w.style.display = 'none'; return; }
+  w.style.display = 'block';
+  document.getElementById('prog-label').textContent = label || '';
+  document.getElementById('prog-fill').style.width = pct + '%';
+}
+
+async function fetchMedia() {
+  const q = document.getElementById('query').value.trim();
+  if (!q) { showErr('Enter a subreddit (r/name) or user (u/name).'); return; }
+  showErr('');
+  allItems = []; selected.clear();
+  document.getElementById('grid').innerHTML = '';
+  document.getElementById('toolbar').style.display = 'none';
+  document.getElementById('bottom-bar').style.display = 'none';
+
+  const sort  = document.getElementById('sort').value;
+  const limit = document.getElementById('limit').value;
+  
+  // Show appropriate progress message based on limit
+  let progressMessage = 'Connecting to Reddit…';
+  if (limit === 'lifetime') {
+    progressMessage = 'Fetching up to 2,500 posts (this may take a while)...';
+  } else if (limit > 100) {
+    progressMessage = `Fetching ${limit} posts (this may take a moment)...`;
+  }
+  
+  setProgress(20, progressMessage);
+
+  let json;
+  try {
+    const res = await fetch(`/api/fetch?q=${encodeURIComponent(q)}&sort=${sort}&limit=${limit}`);
+    
+    if (!res.ok) {
+      const errorData = await res.json().catch(() => ({}));
+      throw new Error(errorData.error || `HTTP ${res.status}: ${res.statusText}`);
+    }
+    
+    json = await res.json();
+    if (!json.ok) throw new Error(json.error || 'Unknown error');
+  } catch(e) {
+    setProgress(null);
+    showErr(e.message || 'Failed to fetch data. Please try again.');
+    return;
+  }
+
+  setProgress(60, 'Extracting media...');
+  const posts = json.data?.data?.children || [];
+  if (!posts.length) { 
+    setProgress(null); 
+    showErr('No posts found. Check the name or try a different sort.'); 
+    return; 
+  }
+
+  try {
+    for (const p of posts) allItems.push(...extractMedia(p.data));
+    setProgress(100, 'Done!');
+    setTimeout(() => setProgress(null), 500);
+
+    if (!allItems.length) { 
+      showErr('No downloadable media found in these posts.', 'warning'); 
+      return; 
+    }
+    renderGrid();
+  } catch (error) {
+    setProgress(null);
+    showErr('Error processing media. Please try again.', 'error');
+  }
+}
+
+function extractMedia(d) {
+  const res = [], title = d.title || '';
+
+  if (d.is_gallery && d.media_metadata) {
+    const ids = d.gallery_data?.items?.map(i => i.media_id) || Object.keys(d.media_metadata);
+    let first = true;
+    for (const id of ids) {
+      const m = d.media_metadata[id];
+      if (!m?.s) continue;
+      const src = (m.s.u || m.s.gif || m.s.mp4 || '').replace(/&amp;/g, '&');
+      if (!src) continue;
+      const type = m.e === 'AnimatedImage' ? 'gif' : 'image';
+      const thumb = ((m.p?.[0]?.u) || src).replace(/&amp;/g, '&');
+      res.push({ url: src, thumb, type, title, postId: d.id, isGallery: first });
+      first = false;
+    }
+    return res;
+  }
+
+  if (d.is_video && d.media?.reddit_video) {
+    const v = d.media.reddit_video;
+    const url = (v.fallback_url || v.hls_url || '').replace(/&amp;/g, '&');
+    const thumb = d.thumbnail?.startsWith('http') ? d.thumbnail : null;
+    if (url) res.push({ url, thumb, type: 'video', title, postId: d.id });
+    return res;
+  }
+
+  const url = d.url || '';
+  if (/\.(jpg|jpeg|png|webp)(\?|$)/i.test(url) || /i\.redd\.it/.test(url)) {
+    const thumb = d.preview?.images?.[0]?.resolutions?.[1]?.url?.replace(/&amp;/g,'&') || url;
+    res.push({ url, thumb, type: 'image', title, postId: d.id });
+  } else if (/\.gifv?(\?|$)/i.test(url)) {
+    const mp4 = d.preview?.images?.[0]?.variants?.mp4?.source?.url?.replace(/&amp;/g,'&');
+    const thumb = d.preview?.images?.[0]?.source?.url?.replace(/&amp;/g,'&') || url;
+    res.push({ url: mp4 || url, thumb, type: 'gif', title, postId: d.id });
+  } else if (d.post_hint === 'image') {
+    const src = d.preview?.images?.[0]?.source?.url?.replace(/&amp;/g,'&') || url;
+    res.push({ url: src, thumb: src, type: 'image', title, postId: d.id });
+  }
+  return res;
+}
+
+function filtered() {
+  if (activeFilter === 'all') return allItems;
+  if (activeFilter === 'gallery') return allItems.filter(i => i.isGallery);
+  return allItems.filter(i => i.type === activeFilter);
+}
+
+function renderGrid() {
+  const items = filtered();
+  const grid  = document.getElementById('grid');
+  grid.innerHTML = '';
+  selected.clear();
+  document.getElementById('toolbar').style.display = 'flex';
+  document.getElementById('bottom-bar').style.display = 'flex';
+  document.getElementById('count-label').textContent = allItems.length + ' items';
+
+  if (!items.length) {
+    grid.innerHTML = '<div class="empty">No items in this category.</div>';
+    updateSelInfo(); return;
+  }
+
+  items.forEach(item => {
+    const idx  = allItems.indexOf(item);
+    const tLabel = item.isGallery ? 'gallery' : item.type;
+    const tClass = 'type-' + tLabel;
+
+    const card = document.createElement('div');
+    card.className = 'card';
+    card.innerHTML = `
+      <div class="thumb-wrap">
+        ${item.thumb
+          ? `<img src="${item.thumb}" loading="lazy" onerror="this.style.display='none'">`
+          : `<div class="thumb-ph">${item.type === 'video' ? '▶' : '🖼'}</div>`}
+        <div class="card-check">
+          <svg width="11" height="11" viewBox="0 0 12 12" fill="none">
+            <polyline points="1.5,6 5,9.5 10.5,2.5" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </div>
+      </div>
+      <div class="card-footer">
+        <div class="card-type ${tClass}">${tLabel}</div>
+        <div class="card-title">${item.title}</div>
+      </div>
+    `;
+    card.addEventListener('click', () => {
+      if (selected.has(idx)) { selected.delete(idx); card.classList.remove('selected'); }
+      else { selected.add(idx); card.classList.add('selected'); }
+      updateSelInfo();
+    });
+    grid.appendChild(card);
+  });
+  updateSelInfo();
+}
+
+function setFilter(type, btn) {
+  activeFilter = type;
+  document.querySelectorAll('.pill').forEach(p => p.classList.remove('active'));
+  btn.classList.add('active');
+  renderGrid();
+}
+
+function selectAll() {
+  filtered().forEach(item => selected.add(allItems.indexOf(item)));
+  document.querySelectorAll('.card').forEach(c => c.classList.add('selected'));
+  updateSelInfo();
+}
+function deselectAll() {
+  selected.clear();
+  document.querySelectorAll('.card').forEach(c => c.classList.remove('selected'));
+  updateSelInfo();
+}
+function updateSelInfo() {
+  document.getElementById('sel-info').textContent = selected.size ? `${selected.size} selected` : '';
+}
+
+function triggerDownload(url, name) {
+  const a = document.createElement('a');
+  a.href = url; a.download = name; a.target = '_blank';
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+}
+
+async function downloadItems(items) {
+  if (!items.length) { showErr('Nothing to download.'); return; }
+  showErr('');
+  
+  // Show progress
+  setProgress(10, 'Preparing download...');
+  
+  try {
+    const response = await fetch('/api/download', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ items: items, zipMode: true })
+    });
+    
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(errorData.error || `HTTP ${response.status}: Download failed`);
+    }
+    
+    if (response.headers.get('content-type')?.includes('application/zip')) {
+      // Handle ZIP file download
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `reddit_media_${Date.now()}.zip`;
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+      
+      setProgress(100, 'ZIP file downloaded!');
+      setTimeout(() => setProgress(null), 1000);
+    } else {
+      // Handle JSON response (for local mode)
+      const result = await response.json();
+      
+      if (!result.success) {
+        throw new Error(result.error || 'Download failed');
+      }
+      
+      setProgress(100, `Downloaded ${result.downloaded} files!`);
+      
+      // Show success message with directory info
+      setTimeout(() => {
+        setProgress(null);
+        showErr(`Successfully downloaded ${result.downloaded} files to: ${result.directory}`, 'success');
+      }, 1000);
+    }
+    
+  } catch (error) {
+    setProgress(null);
+    const errorMsg = error.message || 'Download failed. Please try again.';
+    
+    // Show specific error messages for common issues
+    if (errorMsg.includes('network') || errorMsg.includes('connection')) {
+      showErr('Network error. Please check your internet connection and try again.');
+    } else if (errorMsg.includes('timeout')) {
+      showErr('Download timed out. Please try again with fewer items.');
+    } else {
+      showErr(errorMsg);
+    }
+  }
+}
+
+function downloadAll() { downloadItems(filtered()); }
+function downloadSelected() {
+  if (!selected.size) { showErr('Select at least one item first.'); return; }
+  downloadItems([...selected].map(i => allItems[i]));
+}
+
+document.getElementById('query').addEventListener('keydown', e => {
+  if (e.key === 'Enter') fetchMedia();
+});
+</script>
+</body>
+</html>
