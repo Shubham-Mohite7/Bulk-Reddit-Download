@@ -75,7 +75,7 @@ def set_cache(cache_key, data):
             del cache[oldest_key]
 
 # Thread pool for concurrent operations
-THREAD_POOL = ThreadPoolExecutor(max_workers=10)
+THREAD_POOL = ThreadPoolExecutor(max_workers=20)  # Increased from 10 to 20
 
 # Rate limiting for web deployment
 rate_limits = defaultdict(int)
@@ -210,7 +210,18 @@ def fetch_single_url(url):
         try:
             response = SESSION.get(url, headers=approach["headers"], timeout=approach["timeout"])
             response.raise_for_status()
-            data = response.json()
+            
+            # Handle gzip compression
+            if response.headers.get('content-encoding') == 'gzip':
+                try:
+                    data = response.json()
+                except json.JSONDecodeError:
+                    # If JSON decode fails, decompress manually
+                    import gzip
+                    content = gzip.decompress(response.content)
+                    data = json.loads(content.decode('utf-8'))
+            else:
+                data = response.json()
             
             # Cache the result
             set_cache(cache_key, data)
@@ -286,7 +297,18 @@ def fetch_paginated_posts(path, limit):
             
             response = SESSION.get(url, timeout=10)
             response.raise_for_status()
-            data = response.json()
+            
+            # Handle gzip compression
+            if response.headers.get('content-encoding') == 'gzip':
+                try:
+                    data = response.json()
+                except json.JSONDecodeError:
+                    # If JSON decode fails, decompress manually
+                    import gzip
+                    content = gzip.decompress(response.content)
+                    data = json.loads(content.decode('utf-8'))
+            else:
+                data = response.json()
             
             # Cache the result
             set_cache(cache_key, data)
@@ -294,11 +316,10 @@ def fetch_paginated_posts(path, limit):
             return data, False
             
         except Exception as e:
-            print(f"Error fetching {url}: {str(e)}")
             return None, False
     
     # Process URLs with controlled concurrency
-    batch_size = 3  # Fetch 3 URLs concurrently to avoid rate limiting
+    batch_size = 5  # Increased from 3 to 5 for faster fetching
     for i in range(0, len(urls_to_fetch), batch_size):
         batch = urls_to_fetch[i:i + batch_size]
         
@@ -311,10 +332,6 @@ def fetch_paginated_posts(path, limit):
                 if posts:
                     all_posts.extend(posts)
                     last_id = posts[-1]['data']['name']
-            
-            # Small delay between batches to be respectful to Reddit
-            if i + batch_size < len(urls_to_fetch):
-                time.sleep(0.3)
     
     # Remove duplicates and limit to requested amount
     seen_ids = set()
@@ -352,21 +369,29 @@ def fetch_all_posts(path):
             url += f"&after={last_id}"
         
         try:
-            req = urllib.request.Request(url, headers=HEADERS)
-            with urllib.request.urlopen(req, timeout=15) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
+            response = SESSION.get(url, timeout=15)
+            response.raise_for_status()
+            
+            # Handle gzip compression
+            if response.headers.get('content-encoding') == 'gzip':
+                try:
+                    data = response.json()
+                except json.JSONDecodeError:
+                    # If JSON decode fails, decompress manually
+                    import gzip
+                    content = gzip.decompress(response.content)
+                    data = json.loads(content.decode('utf-8'))
+            else:
+                data = response.json()
             
             posts = data.get('data', {}).get('children', [])
             if not posts:
-                print(f"No more posts found after {request_count} requests, {total_fetched} total posts")
                 break  # No more posts available
             
             all_posts.extend(posts)
             total_fetched += len(posts)
             request_count += 1
             last_id = posts[-1]['data']['name']
-            
-            print(f"Request {request_count}: Fetched {len(posts)} posts, total: {total_fetched}")
             
             # Safety check to prevent infinite loops - max 2500 posts
             if total_fetched >= 2500:
@@ -380,59 +405,45 @@ def fetch_all_posts(path):
             
             # Add delay to avoid rate limiting
             if request_count > 1:
-                time.sleep(0.5)
+                time.sleep(0.2)  # Reduced from 0.5 to 0.2 for faster processing
                 
-        except urllib.error.HTTPError as e:
-            if e.code == 429:
+        except requests.exceptions.HTTPError as e:
+            if e.response.status_code == 429:
                 # Rate limited - wait and retry once
-                print(f"Rate limited, waiting 2 seconds...")
                 time.sleep(2)
                 continue
-            elif e.code in [403, 404]:
-                return jsonify({"error": f"Access denied or not found. The subreddit may be private or doesn't exist."}), e.code
+            elif e.response.status_code in [403, 404]:
+                return jsonify({"error": f"Access denied or not found. The subreddit may be private or doesn't exist."}), e.response.status_code
             else:
                 # For other errors, return what we have so far
                 if all_posts:
-                    print(f"HTTP error {e.code}, returning {len(all_posts)} posts fetched so far")
                     break
-                return jsonify({"error": f"HTTP {e.code}: {str(e)}"}), e.code
+                return jsonify({"error": f"HTTP {e.response.status_code}: {str(e)}"}), e.response.status_code
                 
-        except urllib.error.URLError as e:
-            if "timed out" in str(e).lower():
-                # Timeout - return what we have if anything
-                if all_posts:
-                    print(f"Timeout, returning {len(all_posts)} posts fetched so far")
-                    break
-                return jsonify({"error": "Request timed out. Reddit may be slow. Please try again."}), 408
-            else:
-                if all_posts:
-                    print(f"Network error, returning {len(all_posts)} posts fetched so far")
-                    break
-                return jsonify({"error": "Network error. Please check your internet connection."}), 500
+        except requests.exceptions.Timeout:
+            # Timeout - return what we have if anything
+            if all_posts:
+                print(f"Timeout, returning {len(all_posts)} posts fetched so far")
+                break
+            return jsonify({"error": "Request timed out. Reddit may be slow. Please try again."}), 408
+        except requests.exceptions.ConnectionError:
+            # Connection error - return what we have if anything
+            if all_posts:
+                print(f"Network error, returning {len(all_posts)} posts fetched so far")
+                break
+            return jsonify({"error": "Network error. Please check your internet connection."}), 500
                 
         except json.JSONDecodeError:
             if all_posts:
-                print(f"JSON decode error, returning {len(all_posts)} posts fetched so far")
                 break
             return jsonify({"error": "Invalid response from Reddit. Please try again."}), 500
             
         except Exception as e:
             if all_posts:
-                print(f"Unexpected error, returning {len(all_posts)} posts fetched so far: {str(e)}")
                 break
             return jsonify({"error": f"Unexpected error: {str(e)}"}), 500
     
-    print(f"Final result: {len(all_posts)} posts fetched in {request_count} requests")
-    
-    # Return combined data
-    combined_data = {
-        'data': {
-            'children': all_posts,
-            'after': last_id
-        }
-    }
-    
-    return jsonify({"ok": True, "data": combined_data})
+    return jsonify({"error": "All connection attempts failed. Please try again later."}), 500
 
 @app.route("/api/download", methods=["POST"])
 def download_media():
@@ -449,8 +460,8 @@ def download_media():
             return jsonify({"error": "No items to download"}), 400
         
         # Limit download size for performance
-        if len(items) > 500:
-            return jsonify({"error": "Too many items requested. Maximum 500 items per download."}), 400
+        if len(items) > 1000:
+            return jsonify({"error": "Too many items requested. Maximum 1000 items per download."}), 400
         
         if zip_mode:
             return download_as_zip(items)
@@ -465,17 +476,21 @@ def download_as_zip(items):
     try:
         zip_buffer = io.BytesIO()
         downloaded_count = 0
-        failed_count = 0
+        failed_count = 0  # Initialize failed_count variable
         
         def download_single_file(item_data):
-            """Download a single file"""
             i, item = item_data
             try:
                 url = item["url"]
+                
+                # Validate URL before downloading
+                if not url or not url.startswith(('http://', 'https://')):
+                    print(f"Invalid URL: {url}")
+                    return None, None, False
+                
                 post_id = item.get("postId", f"post_{int(time.time())}")
                 item_type = item.get("type", "image")
                 
-                # Get file extension
                 parsed_url = urlparse(url)
                 original_ext = os.path.splitext(parsed_url.path)[1]
                 
@@ -489,23 +504,41 @@ def download_as_zip(items):
                 else:
                     ext = original_ext
                 
-                # Generate filename
                 filename = f"reddit_{post_id}_{i + 1}{ext}"
                 
-                # Download the file with optimized session
-                response = SESSION.get(url, stream=True, timeout=15)
-                response.raise_for_status()
-                
-                # Read content efficiently
-                content = response.content
-                return filename, content, True
+                # Retry logic for better reliability
+                max_retries = 3
+                for attempt in range(max_retries):
+                    try:
+                        response = requests.get(url, headers=HEADERS, stream=True, timeout=20)
+                        response.raise_for_status()
+                        
+                        # Check if we got actual content
+                        content_length = len(response.content)
+                        content_type = response.headers.get('content-type', '')
+                        
+                        # Validate content
+                        if content_length < 1000:  # Less than 1KB is likely an error
+                            return None, None, False
+                        
+                        # Check for HTML error pages
+                        if 'text/html' in content_type:
+                            return None, None, False
+                        
+                        content = response.content
+                        return filename, content, True
+                        
+                    except requests.exceptions.RequestException as retry_e:
+                        if attempt < max_retries - 1:
+                            time.sleep(1)  # Wait before retry
+                            continue
+                        else:
+                            raise retry_e
                 
             except Exception as e:
-                print(f"Error downloading {item.get('url', 'unknown')}: {str(e)}")
                 return None, None, False
         
-        # Download files concurrently (limit concurrency to avoid overwhelming servers)
-        max_workers = min(8, len(items))  # Up to 8 concurrent downloads
+        max_workers = min(15, len(items))  
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = [executor.submit(download_single_file, (i, item)) for i, item in enumerate(items)]
             
@@ -596,5 +629,6 @@ def download_individual(items):
 
 if __name__ == "__main__":
     os.makedirs("static", exist_ok=True)
-    print("\n  Reddit Media Downloader running at http://localhost:5000\n")
-    app.run(debug=False, port=5000)
+    port = 5001  # Use different port to avoid conflicts
+    print(f"\n  Reddit Media Downloader running at http://localhost:{port}\n")
+    app.run(debug=False, port=port)
