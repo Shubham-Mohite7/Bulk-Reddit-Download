@@ -128,6 +128,157 @@
   .progress-track { height: 3px; background: var(--border); border-radius: 2px; overflow: hidden; }
   .progress-fill { height: 100%; background: var(--accent); border-radius: 2px; transition: width 0.3s; width: 0%; }
 
+  /* Modal Styles */
+  .modal {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.5);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+  }
+
+  .modal-content {
+    background: var(--surface);
+    border-radius: var(--radius);
+    width: 90%;
+    max-width: 600px;
+    max-height: 80vh;
+    overflow: hidden;
+    box-shadow: 0 10px 25px rgba(0, 0, 0, 0.1);
+  }
+
+  .modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 20px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .modal-header h3 {
+    margin: 0;
+    font-size: 18px;
+    font-weight: 500;
+  }
+
+  .modal-close {
+    background: none;
+    border: none;
+    font-size: 24px;
+    cursor: pointer;
+    color: var(--muted);
+    padding: 0;
+    width: 30px;
+    height: 30px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .modal-body {
+    padding: 20px;
+    max-height: 50vh;
+    overflow-y: auto;
+  }
+
+  .destination-options {
+    margin-bottom: 20px;
+  }
+
+  .destination-item {
+    display: flex;
+    align-items: center;
+    padding: 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    margin-bottom: 8px;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+
+  .destination-item:hover {
+    background: var(--accent-light);
+    border-color: var(--accent);
+  }
+
+  .dest-icon {
+    font-size: 24px;
+    margin-right: 12px;
+  }
+
+  .dest-name {
+    font-weight: 500;
+    margin-bottom: 2px;
+  }
+
+  .dest-path {
+    font-size: 12px;
+    color: var(--muted);
+  }
+
+  .custom-destination {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 20px;
+  }
+
+  .custom-destination label {
+    font-weight: 500;
+    margin-bottom: 8px;
+  }
+
+  .custom-destination input {
+    flex: 1;
+    padding: 8px 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    font-family: var(--font);
+  }
+
+  .folder-browser {
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    margin-top: 20px;
+  }
+
+  .browser-header {
+    display: flex;
+    align-items: center;
+    padding: 12px;
+    border-bottom: 1px solid var(--border);
+    gap: 8px;
+  }
+
+  .folder-list {
+    max-height: 200px;
+    overflow-y: auto;
+  }
+
+  .folder-item {
+    display: flex;
+    align-items: center;
+    padding: 8px 12px;
+    cursor: pointer;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .folder-item:hover {
+    background: var(--accent-light);
+  }
+
+  .modal-footer {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    padding: 20px;
+    border-top: 1px solid var(--border);
+  }
+
   .toolbar {
     display: none;
     align-items: center;
@@ -303,6 +454,7 @@
 
   <div class="bottom-bar" id="bottom-bar">
     <button class="link-btn" onclick="selectAll()">Select all</button>
+    <button class="link-btn" onclick="selectDestination()">📁 Destination</button>
     <button class="link-btn" onclick="deselectAll()">Deselect all</button>
     <span class="sel-info" id="sel-info"></span>
     <div style="flex:1"></div>
@@ -310,6 +462,59 @@
     <button class="btn accent" onclick="downloadAll()">Download all</button>
   </div>
 </main>
+
+<!-- Destination Selector Modal -->
+<div id="destination-modal" class="modal" style="display: none;">
+  <div class="modal-content">
+    <div class="modal-header">
+      <h3>Select Download Destination</h3>
+      <button class="modal-close" onclick="closeDestinationModal()">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="destination-options">
+        <div class="destination-item" onclick="selectQuickDestination('')">
+          <span class="dest-icon">📁</span>
+          <div>
+            <div class="dest-name">Default</div>
+            <div class="dest-path">Project Downloads folder</div>
+          </div>
+        </div>
+        <div class="destination-item" onclick="selectQuickDestination('~/Downloads')">
+          <span class="dest-icon">📁</span>
+          <div>
+            <div class="dest-name">Downloads</div>
+            <div class="dest-path">~/Downloads</div>
+          </div>
+        </div>
+        <div class="destination-item" onclick="selectQuickDestination('~/Desktop')">
+          <span class="dest-icon">🖥️</span>
+          <div>
+            <div class="dest-name">Desktop</div>
+            <div class="dest-path">~/Desktop</div>
+          </div>
+        </div>
+      </div>
+      
+      <div class="custom-destination">
+        <label for="custom-path">Custom Path:</label>
+        <input type="text" id="custom-path" placeholder="/path/to/folder or ~/folder" />
+        <button class="btn" onclick="browseFolder()">Browse</button>
+      </div>
+      
+      <div class="folder-browser" id="folder-browser" style="display: none;">
+        <div class="browser-header">
+          <button class="btn" onclick="goBack()">← Back</button>
+          <span id="current-path"></span>
+        </div>
+        <div class="folder-list" id="folder-list"></div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn" onclick="closeDestinationModal()">Cancel</button>
+      <button class="btn accent" onclick="confirmDestination()">Select</button>
+    </div>
+  </div>
+</div>
 
 <script>
 let allItems = [], activeFilter = 'all', selected = new Set();
@@ -542,8 +747,39 @@ async function downloadItems(items) {
   if (!items.length) { showErr('Nothing to download.'); return; }
   showErr('');
   
-  // Show progress
-  setProgress(10, 'Preparing download...');
+  // Generate session ID for progress tracking
+  const sessionId = Date.now().toString();
+  let progressInterval;
+  
+  // Function to poll for progress
+  async function pollProgress() {
+    try {
+      const response = await fetch(`/api/progress/${sessionId}`);
+      if (response.ok) {
+        const data = await response.json();
+        const { completed, total, percentage, current_file, remaining } = data;
+        let message = `Downloading... ${completed}/${total} files`;
+        
+        if (current_file) {
+          message += ` - ${current_file}`;
+        }
+        
+        if (remaining > 0) {
+          message += ` (${remaining} remaining)`;
+        }
+        
+        setProgress(percentage, message);
+      }
+    } catch (error) {
+      // Ignore polling errors
+    }
+  }
+  
+  // Show initial progress
+  setProgress(5, 'Starting downloads...');
+  
+  // Start polling for progress
+  progressInterval = setInterval(pollProgress, 500);
   
   try {
     const response = await fetch('/api/download', {
@@ -551,15 +787,21 @@ async function downloadItems(items) {
       headers: {
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ items: items, zipMode: true })
+      body: JSON.stringify({ 
+        items: items,
+        destination: selectedDestination 
+      })
     });
     
     if (!response.ok) {
+      clearInterval(progressInterval);
       const errorData = await response.json().catch(() => ({}));
       throw new Error(errorData.error || `HTTP ${response.status}: Download failed`);
     }
     
-    if (response.headers.get('content-type')?.includes('application/zip')) {
+    // Check if response is a ZIP file (Vercel deployment)
+    const contentType = response.headers.get('content-type');
+    if (contentType && contentType.includes('application/zip')) {
       // Handle ZIP file download
       const blob = await response.blob();
       const url = window.URL.createObjectURL(blob);
@@ -572,9 +814,12 @@ async function downloadItems(items) {
       document.body.removeChild(a);
       
       setProgress(100, 'ZIP file downloaded!');
-      setTimeout(() => setProgress(null), 1000);
+      setTimeout(() => {
+        setProgress(null);
+        showErr('Files downloaded as ZIP archive', 'success');
+      }, 2000);
     } else {
-      // Handle JSON response (for local mode)
+      // Handle JSON response (local deployment)
       const result = await response.json();
       
       if (!result.success) {
@@ -587,10 +832,13 @@ async function downloadItems(items) {
       setTimeout(() => {
         setProgress(null);
         showErr(`Successfully downloaded ${result.downloaded} files to: ${result.directory}`, 'success');
-      }, 1000);
+      }, 2000);
     }
     
+    clearInterval(progressInterval);
+    
   } catch (error) {
+    clearInterval(progressInterval);
     setProgress(null);
     const errorMsg = error.message || 'Download failed. Please try again.';
     
@@ -609,6 +857,96 @@ function downloadAll() { downloadItems(filtered()); }
 function downloadSelected() {
   if (!selected.size) { showErr('Select at least one item first.'); return; }
   downloadItems([...selected].map(i => allItems[i]));
+}
+
+// Destination selector functions
+let selectedDestination = '';
+
+function selectDestination() {
+  document.getElementById('destination-modal').style.display = 'flex';
+  loadCommonDestinations();
+}
+
+function closeDestinationModal() {
+  document.getElementById('destination-modal').style.display = 'none';
+  document.getElementById('folder-browser').style.display = 'none';
+}
+
+function selectQuickDestination(path) {
+  selectedDestination = path;
+  document.getElementById('custom-path').value = path;
+  
+  // Highlight selected item
+  document.querySelectorAll('.destination-item').forEach(item => {
+    item.style.border = '1px solid var(--border)';
+  });
+  event.currentTarget.style.border = '2px solid var(--accent)';
+}
+
+async function browseFolder() {
+  const customPath = document.getElementById('custom-path').value || '~';
+  try {
+    const response = await fetch('/api/browse-directories', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: customPath })
+    });
+    
+    const result = await response.json();
+    if (result.success) {
+      showFolderBrowser(result);
+    } else {
+      showErr(result.error);
+    }
+  } catch (error) {
+    showErr('Failed to browse directories');
+  }
+}
+
+function showFolderBrowser(data) {
+  const browser = document.getElementById('folder-browser');
+  const currentPathEl = document.getElementById('current-path');
+  const folderList = document.getElementById('folder-list');
+  
+  browser.style.display = 'block';
+  currentPathEl.textContent = data.current_path || data.directories[0]?.path || '';
+  
+  folderList.innerHTML = '';
+  data.directories?.forEach(dir => {
+    const item = document.createElement('div');
+    item.className = 'folder-item';
+    item.innerHTML = `📁 ${dir.name}`;
+    item.onclick = () => selectQuickDestination(dir.path);
+    folderList.appendChild(item);
+  });
+}
+
+function confirmDestination() {
+  selectedDestination = document.getElementById('custom-path').value || selectedDestination;
+  closeDestinationModal();
+  showErr(`Download destination set to: ${selectedDestination || 'Default'}`, 'success');
+}
+
+async function loadCommonDestinations() {
+  try {
+    const response = await fetch('/api/browse-directories', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({})
+    });
+    
+    const result = await response.json();
+    if (result.success) {
+      // Update quick destination options with real paths
+      const destItems = document.querySelectorAll('.destination-item');
+      if (destItems.length >= 4) {
+        destItems[1].querySelector('.dest-path').textContent = result.directories[0]?.path || '~/Downloads';
+        destItems[2].querySelector('.dest-path').textContent = result.directories[1]?.path || '~/Desktop';
+      }
+    }
+  } catch (error) {
+    console.error('Failed to load common destinations:', error);
+  }
 }
 
 document.getElementById('query').addEventListener('keydown', e => {

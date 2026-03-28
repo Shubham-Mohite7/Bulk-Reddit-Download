@@ -1,27 +1,30 @@
-from flask import Flask, jsonify, request, send_from_directory, send_file, after_this_request
-import urllib.request
-import urllib.error
-import json
+from flask import Flask, request, jsonify, send_file, send_from_directory
+from flask_cors import CORS
 import os
-import requests
-from urllib.parse import urlparse
+import json
 import time
-import zipfile
-import io
 import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from functools import lru_cache
+import io
+import zipfile
 import hashlib
+import gzip
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from urllib.parse import urlparse
+import requests
+import urllib3
 import gzip
 from datetime import datetime, timedelta
 from collections import defaultdict
-import weakref
 
 app = Flask(__name__, static_folder="static")
+CORS(app)
 
-# Performance optimizations
+# Performance optimizations for Vercel
 app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 31536000  # 1 year cache for static files
 app.config['JSONIFY_PRETTYPRINT_REGULAR'] = False  # Faster JSON responses
+
+# Check if running on Vercel
+IS_VERCEL = os.environ.get('VERCEL') == '1'
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -33,7 +36,15 @@ HEADERS = {
     "Upgrade-Insecure-Requests": "1"
 }
 
-# Connection pooling for better performance
+# Use urllib3 for better connection pooling in downloads
+import urllib3
+http = urllib3.PoolManager(
+    num_pools=30,  # Increased for more concurrent connections
+    maxsize=30,
+    retries=urllib3.Retry(total=2, backoff_factor=0.1)
+)
+
+# Connection pooling for better performance (used by fetch functions)
 SESSION = requests.Session()
 SESSION.headers.update(HEADERS)
 # Configure connection pool
@@ -264,91 +275,74 @@ def fetch_single_url(url):
     return jsonify({"error": "All connection attempts failed. Please try again later."}), 500
 
 def fetch_paginated_posts(path, limit):
-    """Fetch posts using optimized pagination with concurrent requests"""
+    """Fetch posts using sequential pagination"""
     all_posts = []
     last_id = None
-    remaining = limit
-    request_count = 0
+    total_fetched = 0
     max_requests = (limit // 100) + 2  # Safety buffer
     
-    # Calculate how many requests we need
-    urls_to_fetch = []
-    temp_last_id = None
-    
-    while remaining > 0 and request_count < max_requests:
-        current_limit = min(remaining, 100)
+    while total_fetched < limit and len(all_posts) < limit:
+        current_limit = min(100, limit - total_fetched)
         url = f"https://www.reddit.com/{path}.json?limit={current_limit}&raw_json=1"
         
-        if temp_last_id:
-            url += f"&after={temp_last_id}"
+        if last_id:
+            url += f"&after={last_id}"
         
-        urls_to_fetch.append(url)
-        remaining -= current_limit
-        request_count += 1
-        temp_last_id = f"t3_{request_count * 100}"  # Estimate next ID
-    
-    # Fetch URLs concurrently (but with some delay to avoid rate limiting)
-    def fetch_url(url):
         try:
             cache_key = get_cache_key(url)
             cached_data = get_from_cache(cache_key)
             if cached_data:
-                return cached_data, True
-            
-            response = SESSION.get(url, timeout=10)
-            response.raise_for_status()
-            
-            # Handle gzip compression
-            if response.headers.get('content-encoding') == 'gzip':
-                try:
-                    data = response.json()
-                except json.JSONDecodeError:
-                    # If JSON decode fails, decompress manually
-                    import gzip
-                    content = gzip.decompress(response.content)
-                    data = json.loads(content.decode('utf-8'))
+                data = cached_data
             else:
-                data = response.json()
+                response = SESSION.get(url, timeout=15)
+                response.raise_for_status()
+                
+                # Handle gzip compression
+                if response.headers.get('content-encoding') == 'gzip':
+                    try:
+                        data = response.json()
+                    except json.JSONDecodeError:
+                        import gzip
+                        content = gzip.decompress(response.content)
+                        data = json.loads(content.decode('utf-8'))
+                else:
+                    data = response.json()
+                
+                set_cache(cache_key, data)
             
-            # Cache the result
-            set_cache(cache_key, data)
+            posts = data.get('data', {}).get('children', [])
+            if not posts:
+                break
             
-            return data, False
+            # Check for duplicates
+            new_posts = []
+            seen_ids = set(post['data']['name'] for post in all_posts)
+            
+            for post in posts:
+                if post['data']['name'] not in seen_ids:
+                    new_posts.append(post)
+                    seen_ids.add(post['data']['name'])
+            
+            if not new_posts:
+                break
+            
+            all_posts.extend(new_posts)
+            total_fetched += len(posts)
+            last_id = posts[-1]['data']['name']
+            
+            # Add delay to avoid rate limiting
+            time.sleep(0.2)
             
         except Exception as e:
-            return None, False
-    
-    # Process URLs with controlled concurrency
-    batch_size = 5  # Increased from 3 to 5 for faster fetching
-    for i in range(0, len(urls_to_fetch), batch_size):
-        batch = urls_to_fetch[i:i + batch_size]
-        
-        futures = {THREAD_POOL.submit(fetch_url, url): url for url in batch}
-        
-        for future in as_completed(futures):
-            data, from_cache = future.result()
-            if data and 'data' in data:
-                posts = data.get('data', {}).get('children', [])
-                if posts:
-                    all_posts.extend(posts)
-                    last_id = posts[-1]['data']['name']
-    
-    # Remove duplicates and limit to requested amount
-    seen_ids = set()
-    unique_posts = []
-    for post in all_posts:
-        post_id = post['data']['name']
-        if post_id not in seen_ids:
-            seen_ids.add(post_id)
-            unique_posts.append(post)
-            if len(unique_posts) >= limit:
+            if all_posts:
                 break
+            return jsonify({"error": f"Failed to fetch posts: {str(e)}"}), 500
     
     # Return combined data
     combined_data = {
         'data': {
-            'children': unique_posts[:limit],
-            'after': last_id
+            'children': all_posts[:limit],
+            'after': last_id if all_posts else None
         }
     }
     
@@ -361,6 +355,7 @@ def fetch_all_posts(path):
     total_fetched = 0
     request_count = 0
     max_requests = 25  # 25 requests * 100 posts = 2500 max posts
+    seen_post_ids = set()  # Track seen posts to detect duplicates
     
     while request_count < max_requests:
         url = f"https://www.reddit.com/{path}.json?limit=100&raw_json=1"
@@ -388,19 +383,30 @@ def fetch_all_posts(path):
             if not posts:
                 break  # No more posts available
             
-            all_posts.extend(posts)
-            total_fetched += len(posts)
+            # Check for duplicates
+            new_posts = []
+            duplicate_count = 0
+            for post in posts:
+                post_id = post['data']['name']
+                if post_id not in seen_post_ids:
+                    seen_post_ids.add(post_id)
+                    new_posts.append(post)
+                else:
+                    duplicate_count += 1
+            
+            if duplicate_count > 0:
+                pass  # Silently skip duplicates
+            
+            if not new_posts:
+                break
+            
+            all_posts.extend(new_posts)
+            total_fetched += len(new_posts)
             request_count += 1
-            last_id = posts[-1]['data']['name']
+            last_id = new_posts[-1]['data']['name']
             
             # Safety check to prevent infinite loops - max 2500 posts
             if total_fetched >= 2500:
-                print(f"Reached maximum limit of 2,500 posts")
-                break
-            
-            # If we got fewer than 100 posts, we've reached the end
-            if len(posts) < 100:
-                print(f"Reached end - got only {len(posts)} posts in last request")
                 break
             
             # Add delay to avoid rate limiting
@@ -423,13 +429,11 @@ def fetch_all_posts(path):
         except requests.exceptions.Timeout:
             # Timeout - return what we have if anything
             if all_posts:
-                print(f"Timeout, returning {len(all_posts)} posts fetched so far")
                 break
             return jsonify({"error": "Request timed out. Reddit may be slow. Please try again."}), 408
         except requests.exceptions.ConnectionError:
             # Connection error - return what we have if anything
             if all_posts:
-                print(f"Network error, returning {len(all_posts)} posts fetched so far")
                 break
             return jsonify({"error": "Network error. Please check your internet connection."}), 500
                 
@@ -443,7 +447,110 @@ def fetch_all_posts(path):
                 break
             return jsonify({"error": f"Unexpected error: {str(e)}"}), 500
     
-    return jsonify({"error": "All connection attempts failed. Please try again later."}), 500
+    # Return combined data
+    combined_data = {
+        'data': {
+            'children': all_posts,
+            'after': last_id if all_posts else None
+        }
+    }
+    
+    return jsonify({"ok": True, "data": combined_data})
+
+# Simple progress tracking for Vercel (no SocketIO)
+download_progress = {}
+progress_lock = threading.Lock()
+
+def update_progress(session_id, completed, total, current_file=None):
+    """Update download progress (simplified for Vercel)"""
+    with progress_lock:
+        progress_data = {
+            'completed': completed,
+            'total': total,
+            'percentage': int((completed / total) * 100) if total > 0 else 0,
+            'current_file': current_file,
+            'remaining': total - completed,
+            'timestamp': time.time()
+        }
+        download_progress[session_id] = progress_data
+
+@app.route("/api/progress/<session_id>", methods=["GET"])
+def get_progress(session_id):
+    """Get download progress for polling (Vercel compatible)"""
+    with progress_lock:
+        if session_id in download_progress:
+            # Clean up old progress (older than 5 minutes)
+            if time.time() - download_progress[session_id]['timestamp'] > 300:
+                del download_progress[session_id]
+                return jsonify({"error": "Progress expired"}), 404
+            return jsonify(download_progress[session_id])
+        return jsonify({"error": "Progress not found"}), 404
+
+@app.route("/api/browse-directories", methods=["POST"])
+def browse_directories():
+    """Browse directories and validate custom destination path (Vercel compatible)"""
+    try:
+        data = request.get_json()
+        path = data.get("path", "")
+        
+        if IS_VERCEL:
+            # On Vercel, return only virtual/common directories
+            return jsonify({
+                "success": True,
+                "directories": [
+                    {"name": "Default", "path": ""},
+                    {"name": "Downloads", "path": "~/Downloads"},
+                    {"name": "Desktop", "path": "~/Desktop"}
+                ]
+            })
+        
+        if not path:
+            # Return common directories
+            home = os.path.expanduser("~")
+            desktop = os.path.join(home, "Desktop")
+            documents = os.path.join(home, "Documents")
+            downloads = os.path.join(home, "Downloads")
+            current = os.getcwd()
+            
+            return jsonify({
+                "success": True,
+                "directories": [
+                    {"name": "Desktop", "path": desktop},
+                    {"name": "Documents", "path": documents},
+                    {"name": "Downloads", "path": downloads},
+                    {"name": "Project Folder", "path": current}
+                ]
+            })
+        
+        # Validate and list directory contents
+        if path.startswith("~"):
+            path = os.path.expanduser(path)
+        
+        if not os.path.exists(path):
+            return jsonify({"error": "Directory does not exist"}), 400
+        
+        if not os.path.isdir(path):
+            return jsonify({"error": "Path is not a directory"}), 400
+        
+        # List directories in the path
+        try:
+            items = []
+            for item in os.listdir(path):
+                item_path = os.path.join(path, item)
+                if os.path.isdir(item_path) and not item.startswith('.'):
+                    items.append({"name": item, "path": item_path})
+            
+            return jsonify({
+                "success": True,
+                "current_path": path,
+                "directories": items
+            })
+            
+        except PermissionError:
+            return jsonify({"error": "Permission denied"}), 403
+            
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 @app.route("/api/download", methods=["POST"])
 def download_media():
@@ -454,29 +561,35 @@ def download_media():
     try:
         data = request.get_json()
         items = data.get("items", [])
-        zip_mode = data.get("zipMode", True)
+        custom_destination = data.get("destination", "")  # Get custom destination if provided
+        session_id = request.remote_addr or str(time.time())  # Use IP or timestamp as session identifier
         
         if not items:
             return jsonify({"error": "No items to download"}), 400
         
-        # Limit download size for performance
-        if len(items) > 1000:
-            return jsonify({"error": "Too many items requested. Maximum 1000 items per download."}), 400
+        # Limit download size for performance (smaller on Vercel)
+        max_items = 500 if IS_VERCEL else 2500
+        if len(items) > max_items:
+            return jsonify({"error": f"Too many items requested. Maximum {max_items} items per download."}), 400
         
-        if zip_mode:
-            return download_as_zip(items)
+        if IS_VERCEL:
+            # On Vercel, return ZIP file (can't save to filesystem)
+            return download_as_zip(items, session_id)
         else:
-            return download_individual(items)
+            return download_individual(items, session_id, custom_destination)
             
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-def download_as_zip(items):
-    """Download files concurrently and return as a ZIP archive"""
+def download_as_zip(items, session_id):
+    """Download files concurrently and return as a ZIP archive (Vercel compatible)"""
     try:
         zip_buffer = io.BytesIO()
         downloaded_count = 0
-        failed_count = 0  # Initialize failed_count variable
+        failed_count = 0
+        
+        # Initialize progress
+        update_progress(session_id, 0, len(items))
         
         def download_single_file(item_data):
             i, item = item_data
@@ -485,7 +598,6 @@ def download_as_zip(items):
                 
                 # Validate URL before downloading
                 if not url or not url.startswith(('http://', 'https://')):
-                    print(f"Invalid URL: {url}")
                     return None, None, False
                 
                 post_id = item.get("postId", f"post_{int(time.time())}")
@@ -510,46 +622,48 @@ def download_as_zip(items):
                 max_retries = 3
                 for attempt in range(max_retries):
                     try:
-                        response = requests.get(url, headers=HEADERS, stream=True, timeout=20)
-                        response.raise_for_status()
-                        
-                        # Check if we got actual content
-                        content_length = len(response.content)
-                        content_type = response.headers.get('content-type', '')
+                        # Use urllib3 for better connection pooling
+                        response = http.request('GET', url, timeout=10, retries=False)
+                        content = response.data
+                        content_length = len(content)
                         
                         # Validate content
-                        if content_length < 1000:  # Less than 1KB is likely an error
+                        if content_length < 100:  # Less than 100 bytes is likely an error
                             return None, None, False
                         
-                        # Check for HTML error pages
-                        if 'text/html' in content_type:
-                            return None, None, False
+                        # Update progress
+                        downloaded_count += 1
+                        update_progress(session_id, downloaded_count, len(items), filename)
                         
-                        content = response.content
                         return filename, content, True
                         
-                    except requests.exceptions.RequestException as retry_e:
+                    except Exception as retry_e:
                         if attempt < max_retries - 1:
-                            time.sleep(1)  # Wait before retry
+                            time.sleep(0.5)
                             continue
                         else:
                             raise retry_e
                 
             except Exception as e:
+                # Still update progress even on failure
+                downloaded_count += 1
+                update_progress(session_id, downloaded_count, len(items), None)
                 return None, None, False
         
-        max_workers = min(15, len(items))  
+        max_workers = min(10, len(items))  # Reduced for Vercel
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = [executor.submit(download_single_file, (i, item)) for i, item in enumerate(items)]
             
-            with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED, compresslevel=6) as zip_file:
+            with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED, compresslevel=1) as zip_file:
                 for future in as_completed(futures):
                     filename, content, success = future.result()
                     if success and filename and content:
                         zip_file.writestr(filename, content)
-                        downloaded_count += 1
                     else:
                         failed_count += 1
+        
+        # Final progress update
+        update_progress(session_id, len(items), len(items))
         
         if downloaded_count == 0:
             return jsonify({"error": "Failed to download any files. Please check your internet connection and try again."}), 500
@@ -570,22 +684,43 @@ def download_as_zip(items):
     except Exception as e:
         return jsonify({"error": f"Failed to create ZIP file: {str(e)}"}), 500
 
-def download_individual(items):
-    """Download files to server storage (for local deployment)"""
+def download_individual(items, session_id, custom_destination=""):
+    """Download files concurrently to custom destination folder with progress tracking"""
     try:
-        # Create downloads directory if it doesn't exist
-        downloads_dir = os.path.join(os.getcwd(), "downloads")
+        # Determine download directory
+        if custom_destination and custom_destination.strip():
+            # Use custom destination (expand user path if needed)
+            if custom_destination.startswith("~"):
+                downloads_dir = os.path.expanduser(custom_destination)
+            else:
+                downloads_dir = os.path.abspath(custom_destination)
+        else:
+            # Default to Downloads folder
+            downloads_dir = os.path.join(os.getcwd(), "Downloads")
+        
+        # Create directory if it doesn't exist
         os.makedirs(downloads_dir, exist_ok=True)
         
         downloaded_files = []
+        failed_count = 0
+        completed_count = 0
         
-        for i, item in enumerate(items):
+        # Initialize progress
+        update_progress(session_id, 0, len(items))
+        
+        def download_single_file(item_data):
+            nonlocal completed_count
+            i, item = item_data
             try:
                 url = item["url"]
+                
+                # Validate URL before downloading
+                if not url or not url.startswith(('http://', 'https://')):
+                    return None, False
+                
                 post_id = item.get("postId", f"post_{int(time.time())}")
                 item_type = item.get("type", "image")
                 
-                # Get file extension from URL or default based on type
                 parsed_url = urlparse(url)
                 original_ext = os.path.splitext(parsed_url.path)[1]
                 
@@ -599,23 +734,61 @@ def download_individual(items):
                 else:
                     ext = original_ext
                 
-                # Generate filename
                 filename = f"reddit_{post_id}_{i + 1}{ext}"
                 filepath = os.path.join(downloads_dir, filename)
                 
-                # Download the file
-                response = requests.get(url, headers=HEADERS, stream=True, timeout=30)
-                response.raise_for_status()
-                
-                with open(filepath, 'wb') as f:
-                    for chunk in response.iter_content(chunk_size=8192):
-                        f.write(chunk)
-                
-                downloaded_files.append(filename)
+                # Retry logic for better reliability
+                max_retries = 3
+                for attempt in range(max_retries):
+                    try:
+                        # Use urllib3 for better connection pooling
+                        response = http.request('GET', url, timeout=10, retries=False)
+                        content = response.data
+                        content_length = len(content)
+                        
+                        # Validate content
+                        if content_length < 100:  # Less than 100 bytes is likely an error
+                            return None, False
+                        
+                        # Write file to Downloads folder
+                        with open(filepath, 'wb') as f:
+                            f.write(content)
+                        
+                        # Update progress
+                        completed_count += 1
+                        update_progress(session_id, completed_count, len(items), filename)
+                        
+                        return filename, True
+                        
+                    except Exception as retry_e:
+                        if attempt < max_retries - 1:
+                            time.sleep(0.5)  # Reduced from 1 to 0.5 seconds for faster retries
+                            continue
+                        else:
+                            raise retry_e
                 
             except Exception as e:
-                print(f"Error downloading {url}: {str(e)}")
-                continue
+                # Still update progress even on failure
+                completed_count += 1
+                update_progress(session_id, completed_count, len(items), None)
+                return None, False
+        
+        max_workers = min(30, len(items))  # Increased from 15 to 30 for faster downloads
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = [executor.submit(download_single_file, (i, item)) for i, item in enumerate(items)]
+            
+            for future in as_completed(futures):
+                filename, success = future.result()
+                if success and filename:
+                    downloaded_files.append(filename)
+                else:
+                    failed_count += 1
+        
+        # Final progress update
+        update_progress(session_id, len(items), len(items))
+        
+        if len(downloaded_files) == 0:
+            return jsonify({"error": "Failed to download any files. Please check your internet connection and try again."}), 500
         
         return jsonify({
             "success": True,
@@ -631,4 +804,7 @@ if __name__ == "__main__":
     os.makedirs("static", exist_ok=True)
     port = 5001  # Use different port to avoid conflicts
     print(f"\n  Reddit Media Downloader running at http://localhost:{port}\n")
-    app.run(debug=False, port=port)
+    if IS_VERCEL:
+        app.run(debug=False, port=port)
+    else:
+        app.run(debug=False, port=port)
